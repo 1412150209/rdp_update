@@ -8,39 +8,30 @@ use rdp_update::Config;
 fn main() {
     let cli = Config::parse();
     // 处理参数
-    if let Err(e) = cli.parse_config() {
-        eprintln!("{}", e);
+    cli.parse_config().unwrap_or_else(|err| {
+        eprintln!("{}", err);
         exit(-1);
-    }
+    });
     // 获取新配置
-    let new_config = match cli.get_new() {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("{}", e);
-            exit(-1);
-        }
-    };
+    let new_config = cli.get_new().unwrap_or_else(|err| {
+        eprintln!("{}", err);
+        exit(-1);
+    });
     // 获取本地配置
-    let local_config = match cli.get_local() {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("{}", e);
-            exit(-1);
-        }
-    };
+    let local_config = cli.get_local().unwrap_or_else(|err| {
+        eprintln!("{}", err);
+        exit(-1);
+    });
     // 比较日期
-    if match Config::compare_date(&new_config, &local_config) {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("{}", e);
-            exit(-1);
-        }
-    } {
+    if Config::compare_date(&new_config, &local_config).unwrap_or_else(|err| {
+        eprintln!("{}", err);
+        exit(-1);
+    }) {
         // 需要更新
-        if let Err(e) = cli.save_local(&new_config) {
-            eprintln!("{}", e);
+        cli.save_local(&new_config).unwrap_or_else(|err| {
+            eprintln!("{}", err);
             exit(-1);
-        }
+        })
     }
     // 是否静默
     if !cli.quiet {
