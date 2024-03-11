@@ -41,7 +41,7 @@ pub struct Config {
 impl Config {
     /// 验证路径是否正确
     pub fn parser_position(pos: &str) -> Result<PathBuf, String> {
-        let config_file: &str = "rdpwarp.ini";
+        let config_file: &str = "rdpwrap.ini";
         let path = Path::new(pos);
         if !Path::exists(path) {
             Err(format!("路径文件{pos}不存在."))
