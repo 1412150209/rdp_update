@@ -32,6 +32,8 @@ fn main() {
             eprintln!("{}", err);
             exit(-1);
         })
+    } else{
+        println!("无需更新");
     }
     // 是否静默
     if !cli.quiet {

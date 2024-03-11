@@ -9,7 +9,7 @@ use configparser::ini::Ini;
 #[derive(Parser)]
 #[command(name = "lers梦魔")]
 #[command(author = "lers.fun")]
-#[command(version = "0.2.0")]
+#[command(version = "0.2.1")]
 #[command(about = "A tool to update RDP library.", long_about = None)]
 pub struct Config {
     /// 静默模式执行(不等待用户键入)
