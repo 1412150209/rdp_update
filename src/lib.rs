@@ -1,15 +1,17 @@
 use std::error::Error;
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::exit;
 use std::time::Duration;
 
 use clap::Parser;
 use configparser::ini::Ini;
+use windows_service_controller::dword::STATUS;
 
 #[derive(Parser)]
 #[command(name = "lers梦魔")]
 #[command(author = "lers.fun")]
-#[command(version = "0.2.1")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "A tool to update RDP library.", long_about = None)]
 pub struct Config {
     /// 静默模式执行(不等待用户键入)
@@ -20,7 +22,7 @@ pub struct Config {
     #[arg(
         short,
         long,
-        default_value = "https://cdn.jsdelivr.net/gh/sebaxakerhtc/rdpwrap.ini@master/rdpwrap.ini"
+        default_value = "https://cdn.jsdelivr.net/gh/loyejaotdiqr47123/rdpwrap@master/res/rdpwrap.ini"
     )]
     url: Option<String>,
 
@@ -28,67 +30,63 @@ pub struct Config {
     short,
     long,
     default_value = "C:\\Program Files\\RDP Wrapper\\rdpwrap.ini",
-    value_parser = Config::parser_position
+    value_parser = parser_position
     )]
     /// 指定rdpwrap.ini的位置
     position: Option<PathBuf>,
 
     #[arg(long, default_value = "false")]
     /// 重启rdp服务，不检查更新
-    reboot: bool,
+    pub reboot: bool,
+}
+
+/// 验证路径是否正确
+pub fn parser_position(pos: &str) -> Result<PathBuf, String> {
+    let config_file: &str = "rdpwrap.ini";
+    let path = Path::new(pos);
+    if !Path::exists(path) {
+        Err(format!("路径文件{pos}不存在."))
+    } else {
+        if path.is_dir() {
+            let buf = path.join(config_file);
+            if !buf.exists() {
+                Err(format!("路径{pos}下不存在配置文件{config_file}"))
+            } else {
+                Ok(buf)
+            }
+        } else if path.is_file() {
+            if !path.ends_with(config_file) {
+                Err(format!("配置文件应该为{config_file}"))
+            } else {
+                Ok(path.to_path_buf())
+            }
+        } else {
+            Err(format!("路径错误{pos}"))
+        }
+    }
 }
 
 impl Config {
-    /// 验证路径是否正确
-    pub fn parser_position(pos: &str) -> Result<PathBuf, String> {
-        let config_file: &str = "rdpwrap.ini";
-        let path = Path::new(pos);
-        if !Path::exists(path) {
-            Err(format!("路径文件{pos}不存在."))
-        } else {
-            if path.is_dir() {
-                let buf = path.join(config_file);
-                if !buf.exists() {
-                    Err(format!("路径{pos}下不存在配置文件{config_file}"))
-                } else {
-                    Ok(buf)
-                }
-            } else if path.is_file() {
-                if !path.ends_with(config_file) {
-                    Err(format!("配置文件应该为{config_file}"))
-                } else {
-                    Ok(path.to_path_buf())
-                }
-            } else {
-                Err(format!("路径错误{pos}"))
-            }
-        }
-    }
-
-    /// 处理参数
-    pub fn parse_config(&self) -> Result<(), Box<dyn Error>> {
-        // 处理重启参数
-        if self.reboot {
-            Self::restart_service()?;
-            exit(0)
-        }
-        Ok(())
-    }
-
     /// 获取配置更新
-    pub fn get_new(&self) -> Result<Ini, Box<dyn Error>> {
+    pub fn ini(req: &mut reqwest::blocking::Response) -> Result<Ini, Box<dyn Error>> {
+        let mut text = String::new();
+        req.read_to_string(&mut text)?;
+        let mut ini = Ini::new();
+        match ini.read(text) {
+            Ok(_) => Ok(ini),
+            Err(_) => return Err("转化ini失败".into()),
+        }
+    }
+
+    pub fn download(&self) -> Result<reqwest::blocking::Response, Box<dyn Error>> {
+        let url = &self.url.to_owned().unwrap();
+        println!("正在获取最新配置:{}", url);
         let client = reqwest::blocking::Client::new();
-        let new_config = client.get(&self.url.to_owned().unwrap())
+        Ok(client.get(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
             .header("Accept", "*/*")
             .timeout(Duration::from_secs(20))
-            .send()?
-            .text()?;
-        let mut ini = Ini::new();
-        match ini.read(new_config) {
-            Ok(_) => Ok(ini),
-            Err(_) => return Err("从网址读取配置失败".into()),
-        }
+            .send()?)
     }
 
     /// 比较配置日期，判断是否需要更新
@@ -110,6 +108,7 @@ impl Config {
             Err(e) => return Err(format!("日期格式转换错误{e}").into()),
         };
         if new_date.gt(&local_date) {
+            println!("存在新版配置文件:{}", new_date);
             Ok(true)
         } else {
             Ok(false)
@@ -126,33 +125,95 @@ impl Config {
     }
 
     /// 保存配置
-    pub fn save_local(&self, new: &Ini) -> Result<(), Box<dyn Error>> {
-        return match new.write(self.position.to_owned().unwrap()) {
-            Ok(_) => Ok(()),
+    pub fn save_local(
+        &mut self,
+        config: &mut reqwest::blocking::Response,
+    ) -> Result<(), Box<dyn Error>> {
+        Config::close_service()?;
+        let mut bytes: Vec<u8> = vec![];
+        config.copy_to(&mut bytes)?;
+        return match fs::write(self.position.to_owned().unwrap(), bytes) {
+            Ok(_) => {
+                Config::start_service()?;
+                Ok(())
+            }
             Err(e) => Err(format!("本地文件保存错误{e}").into()),
         };
     }
-    /// 重启rdp服务
-    pub fn restart_service() -> Result<(), Box<dyn Error>> {
+
+    /// 开启rdp服务
+    pub fn start_service() -> Result<(), Box<dyn Error>> {
+        println!("尝试开启rdp服务");
+        let service1 = windows_service_controller::WindowsService::new("UmRdpService").unwrap();
+        let service2 = windows_service_controller::WindowsService::new("TermService").unwrap();
+        if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_RUNNING)
+        {
+            println!("服务UmRdpService已在运行")
+        } else if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_START_PENDING)
+        {
+            println!("服务UmRdpService正在启动")
+        } else {
+            service1.start_service().unwrap();
+        }
+        if service2
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_RUNNING)
+        {
+            println!("服务TermService已在运行")
+        } else if service2
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_START_PENDING)
+        {
+            println!("服务TermService正在启动")
+        } else {
+            service2.start_service().unwrap();
+        }
+        Ok(())
+    }
+
+    /// 关闭rdp服务
+    pub fn close_service() -> Result<(), Box<dyn Error>> {
         println!("尝试关闭rdp服务");
-        let mut cmd = std::process::Command::new("cmd");
-        match cmd.args(["/c", "echo Y | net stop UmRdpService"]).output() {
-            Ok(_) => {}
-            Err(_) => return Err("关闭UmRdpService失败,请尝试使用管理员权限启动".into()),
+        let service1 = windows_service_controller::WindowsService::new("UmRdpService").unwrap();
+        let service2 = windows_service_controller::WindowsService::new("TermService").unwrap();
+        if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_STOPPED)
+        {
+            println!("服务UmRdpService未在运行")
+        } else if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_STOP_PENDING)
+        {
+            println!("服务UmRdpService正在关闭")
+        } else {
+            service1.stop_service().unwrap();
         }
-        match cmd.args(["/c", "echo Y | net stop TermService"]).output() {
-            Ok(_) => {}
-            Err(_) => return Err("关闭TermService失败,请尝试使用管理员权限启动".into()),
+        if service2
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_STOPPED)
+        {
+            println!("服务TermService未在运行")
+        } else if service2
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_STOP_PENDING)
+        {
+            println!("服务TermService正在关闭")
+        } else {
+            service2.stop_service().unwrap();
         }
-        println!("尝试启动rdp服务");
-        match cmd.args(["/c", "echo Y | net start UmRdpService"]).output() {
-            Ok(_) => {}
-            Err(_) => return Err("启动UmRdpService失败,请尝试使用管理员权限启动".into()),
-        }
-        match cmd.args(["/c", "echo Y | net start TermService"]).output() {
-            Ok(_) => {}
-            Err(_) => return Err("启动TermService失败,请尝试使用管理员权限启动".into()),
-        };
         Ok(())
     }
 }
