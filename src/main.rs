@@ -54,7 +54,7 @@ fn main() {
         exit(0)
     }
     // 获取新配置
-    let mut origin = cli.download().unwrap_or_else(|err| {
+    let origin = cli.download().unwrap_or_else(|err| {
         eprintln!("{}", err.to_string());
         exit_program(cli.quiet, -1);
     });
@@ -63,7 +63,7 @@ fn main() {
         eprintln!("{}", err.to_string());
         exit_program(cli.quiet, -1);
     });
-    let new_config = Config::ini(&mut origin).unwrap_or_else(|err| {
+    let new_config = Config::ini(&origin).unwrap_or_else(|err| {
         eprintln!("{}", err.to_string());
         exit_program(cli.quiet, -1);
     });
@@ -73,12 +73,17 @@ fn main() {
         exit_program(cli.quiet, -1);
     }) {
         // 需要更新
-        cli.save_local(&mut origin).unwrap_or_else(|err| {
+        cli.save_local(&origin).unwrap_or_else(|err| {
             eprintln!("{}", err.to_string());
             exit_program(cli.quiet, -1);
         });
         println!("更新成功");
     } else {
         println!("无需更新");
+        Config::check_service().unwrap_or_else(|err| {
+            eprintln!("{}", err.to_string());
+            exit_program(cli.quiet, -1);
+        })
     }
+    exit_program(cli.quiet, 0)
 }

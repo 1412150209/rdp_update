@@ -1,12 +1,11 @@
 use std::error::Error;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
 use configparser::ini::Ini;
-use windows_service_controller::dword::STATUS;
+use windows_service_controller::dword::service_status::STATUS;
 
 #[derive(Parser)]
 #[command(name = "lers梦魔")]
@@ -22,7 +21,7 @@ pub struct Config {
     #[arg(
         short,
         long,
-        default_value = "https://cdn.jsdelivr.net/gh/loyejaotdiqr47123/rdpwrap@master/res/rdpwrap.ini"
+        default_value = "https://raw.gitcode.com/weixin_53304770/rdpwrap/raw/master/res/rdpwrap.ini"
     )]
     url: Option<String>,
 
@@ -67,18 +66,41 @@ pub fn parser_position(pos: &str) -> Result<PathBuf, String> {
 }
 
 impl Config {
+    pub fn check_service() -> Result<(), Box<dyn Error>> {
+        println!("检查服务状态");
+        let service1 = windows_service_controller::WindowsService::new("UmRdpService").unwrap();
+        let service2 = windows_service_controller::WindowsService::new("TermService").unwrap();
+        if service2
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_RUNNING)
+        {
+            println!("TermService服务正常运行")
+        } else {
+            Self::start_service()?;
+        }
+        if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_RUNNING)
+        {
+            println!("UmRdpService服务正常运行")
+        } else {
+            Self::start_service()?;
+        }
+        Ok(())
+    }
+
     /// 获取配置更新
-    pub fn ini(req: &mut reqwest::blocking::Response) -> Result<Ini, Box<dyn Error>> {
-        let mut text = String::new();
-        req.read_to_string(&mut text)?;
+    pub fn ini(req: &String) -> Result<Ini, Box<dyn Error>> {
         let mut ini = Ini::new();
-        match ini.read(text) {
+        match ini.read(req.to_string()) {
             Ok(_) => Ok(ini),
             Err(_) => return Err("转化ini失败".into()),
         }
     }
 
-    pub fn download(&self) -> Result<reqwest::blocking::Response, Box<dyn Error>> {
+    pub fn download(&self) -> Result<String, Box<dyn Error>> {
         let url = &self.url.to_owned().unwrap();
         println!("正在获取最新配置:{}", url);
         let client = reqwest::blocking::Client::new();
@@ -86,11 +108,13 @@ impl Config {
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
             .header("Accept", "*/*")
             .timeout(Duration::from_secs(20))
-            .send()?)
+            .send()?
+            .text()?)
     }
 
     /// 比较配置日期，判断是否需要更新
     pub fn compare_date(new: &Ini, local: &Ini) -> Result<bool, Box<dyn Error>> {
+        let mut flag = false;
         let date = match new.get("Main", "Updated") {
             None => return Err("读取网址配置格式错误".into()),
             Some(date) => date,
@@ -99,15 +123,20 @@ impl Config {
             Ok(date) => date,
             Err(e) => return Err(format!("日期格式转换错误{e}").into()),
         };
-        let date = match local.get("Main", "Updated") {
-            None => return Err("读取本地配置格式错误".into()),
+        let date: String = match local.get("Main", "Updated") {
+            None => {
+                eprintln!("读取本地配置格式错误,直接替换为网址获取结果.");
+                flag = true;
+                String::from("1000-01-01")
+            }
             Some(date) => date,
         };
+
         let local_date = match chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
             Ok(date) => date,
             Err(e) => return Err(format!("日期格式转换错误{e}").into()),
         };
-        if new_date.gt(&local_date) {
+        if new_date.gt(&local_date) || flag {
             println!("存在新版配置文件:{}", new_date);
             Ok(true)
         } else {
@@ -125,14 +154,12 @@ impl Config {
     }
 
     /// 保存配置
-    pub fn save_local(
-        &mut self,
-        config: &mut reqwest::blocking::Response,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn save_local(&mut self, config: &String) -> Result<(), Box<dyn Error>> {
         Config::close_service()?;
-        let mut bytes: Vec<u8> = vec![];
-        config.copy_to(&mut bytes)?;
-        return match fs::write(self.position.to_owned().unwrap(), bytes) {
+        return match fs::write(
+            self.position.to_owned().unwrap(),
+            config.to_string().as_bytes(),
+        ) {
             Ok(_) => {
                 Config::start_service()?;
                 Ok(())
@@ -146,21 +173,6 @@ impl Config {
         println!("尝试开启rdp服务");
         let service1 = windows_service_controller::WindowsService::new("UmRdpService").unwrap();
         let service2 = windows_service_controller::WindowsService::new("TermService").unwrap();
-        if service1
-            .query_service_status()
-            .unwrap()
-            .eq(&STATUS::SERVICE_RUNNING)
-        {
-            println!("服务UmRdpService已在运行")
-        } else if service1
-            .query_service_status()
-            .unwrap()
-            .eq(&STATUS::SERVICE_START_PENDING)
-        {
-            println!("服务UmRdpService正在启动")
-        } else {
-            service1.start_service().unwrap();
-        }
         if service2
             .query_service_status()
             .unwrap()
@@ -174,8 +186,34 @@ impl Config {
         {
             println!("服务TermService正在启动")
         } else {
-            service2.start_service().unwrap();
+            match service2.start_service() {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("{}", e)
+                }
+            }
         }
+        if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_RUNNING)
+        {
+            println!("服务UmRdpService已在运行")
+        } else if service1
+            .query_service_status()
+            .unwrap()
+            .eq(&STATUS::SERVICE_START_PENDING)
+        {
+            println!("服务UmRdpService正在启动")
+        } else {
+            match service1.start_service() {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("{}", e)
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -197,7 +235,14 @@ impl Config {
         {
             println!("服务UmRdpService正在关闭")
         } else {
-            service1.stop_service().unwrap();
+            match service2.stop_service(){
+                Ok(_) => {println!("已发送关闭命令到服务UmRdpService")}
+                Err(e) => {
+                    if e.eq(&windows_service_controller::dword::service_errors::STATUS::ERROR_DEPENDENT_SERVICES_RUNNING){
+                        println!("{}",e);
+                    }
+                }
+            }
         }
         if service2
             .query_service_status()
@@ -212,8 +257,16 @@ impl Config {
         {
             println!("服务TermService正在关闭")
         } else {
-            service2.stop_service().unwrap();
+            match service2.stop_service(){
+                Ok(_) => {println!("已发送关闭命令到服务TermService")}
+                Err(e) => {
+                    if e.eq(&windows_service_controller::dword::service_errors::STATUS::ERROR_DEPENDENT_SERVICES_RUNNING){
+                        println!("{}",e)
+                    }
+                }
+            }
         }
+
         Ok(())
     }
 }
